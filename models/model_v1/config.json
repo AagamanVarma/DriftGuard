@@ -1,0 +1,10 @@
+{
+  "model_type": "LogisticRegression",
+  "hyperparameters": {
+    "C": 0.07459343285726547,
+    "solver": "lbfgs"
+  },
+  "feature_config": {
+    "vectorizer": "TfidfVectorizer"
+  }
+}

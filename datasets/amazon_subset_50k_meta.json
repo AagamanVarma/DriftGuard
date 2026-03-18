@@ -1,0 +1,49 @@
+{
+  "main_dataset": {
+    "path": "/Users/aagamanvarma/Desktop/prj/datasets/sample_data.csv",
+    "rows": 50000,
+    "split_counts": {
+      "train": 42000,
+      "test": 8000
+    },
+    "label_counts": {
+      "positive": 25421,
+      "negative": 24579
+    }
+  },
+  "drift_batches": {
+    "directory": "/Users/aagamanvarma/Desktop/prj/datasets/drift_batches",
+    "files": {
+      "drift_batch_a_in_domain.csv": {
+        "rows": 8000,
+        "label_counts": {
+          "positive": 4080,
+          "negative": 3920
+        }
+      },
+      "drift_batch_b_label_shift_positive.csv": {
+        "rows": 8000,
+        "label_counts": {
+          "positive": 8000,
+          "negative": 0
+        }
+      },
+      "drift_batch_c_vocab_shift.csv": {
+        "rows": 8000,
+        "label_counts": {
+          "positive": 4080,
+          "negative": 3920
+        }
+      }
+    },
+    "intended_behavior": {
+      "drift_batch_a_in_domain.csv": "Usually low drift (control batch).",
+      "drift_batch_b_label_shift_positive.csv": "High drift from label distribution shift.",
+      "drift_batch_c_vocab_shift.csv": "High drift from out-of-vocabulary token shift."
+    }
+  },
+  "source_files": {
+    "train": "/Users/aagamanvarma/Desktop/archive/train.csv",
+    "test": "/Users/aagamanvarma/Desktop/archive/test.csv"
+  }
+}
