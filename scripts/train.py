@@ -31,7 +31,7 @@ def main():
     logger.info("SELF-IMPROVING ML SYSTEM - INITIAL TRAINING")
     logger.info("=" * 80)
     
-    # Define paths
+    # Project folders used by this script.
     dataset_path = project_root / "datasets" / "sample_data.csv"
     models_dir = project_root / "models"
     production_dir = project_root / "production"
@@ -42,6 +42,8 @@ def main():
     
     try:
         logger.info("\n[Step 1-4] Training + selecting + saving + promoting best model...")
+        # optimize=True here means: try a small set of readable configs,
+        # then pick the best one using validation metrics.
         result = train_and_promote(
             dataset_path=dataset_path,
             models_dir=models_dir,

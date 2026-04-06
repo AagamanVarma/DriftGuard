@@ -13,9 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 import joblib
 import numpy as np
-import optuna
 import pandas as pd
-from optuna.samplers import TPESampler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -30,6 +28,26 @@ DEFAULT_WEIGHTS = {
     "f1_score": 0.4,
     "precision": 0.1,
     "recall": 0.1,
+}
+
+# We keep a small, readable set of parameter candidates per model.
+# This gives better results than one fixed config, but is still easy to explain.
+PARAM_CANDIDATES = {
+    "LogisticRegression": [
+        {"C": 1.0, "solver": "lbfgs"},
+        {"C": 0.5, "solver": "liblinear"},
+        {"C": 2.0, "solver": "lbfgs"},
+    ],
+    "RandomForest": [
+        {"n_estimators": 120, "max_depth": 20, "min_samples_split": 5, "min_samples_leaf": 2},
+        {"n_estimators": 180, "max_depth": 30, "min_samples_split": 4, "min_samples_leaf": 2},
+        {"n_estimators": 100, "max_depth": 15, "min_samples_split": 6, "min_samples_leaf": 3},
+    ],
+    "LinearSVC": [
+        {"C": 1.0, "loss": "squared_hinge"},
+        {"C": 0.5, "loss": "squared_hinge"},
+        {"C": 2.0, "loss": "squared_hinge"},
+    ],
 }
 
 
@@ -170,6 +188,7 @@ def split_and_vectorize(
     max_features: int = 1000,
 ) -> Dict[str, Any]:
     """Split data and vectorize text with TF-IDF."""
+    # 1) Keep a final test split untouched for fair model comparison.
     train_val, test = train_test_split(
         df,
         test_size=test_size,
@@ -177,6 +196,7 @@ def split_and_vectorize(
         stratify=df["label"],
     )
 
+    # 2) Split remaining data into train and validation.
     val_size_adjusted = val_size / (1 - test_size)
     train, val = train_test_split(
         train_val,
@@ -245,6 +265,7 @@ def build_drift_baseline(
     if not texts:
         raise ValueError("Cannot build drift baseline from empty text list")
 
+    # These simple summary stats are cheap and easy to explain in viva/interviews.
     lengths = np.array([len(str(t)) for t in texts], dtype=float)
     token_counts = np.array([len(_tokenize(t)) for t in texts], dtype=float)
     vocab = [str(v) for v in vectorizer.get_feature_names_out()]
@@ -282,6 +303,7 @@ def detect_text_drift(
     baseline_labels = baseline.get("label_distribution", {})
     vocab = set(str(v) for v in baseline.get("vocabulary", []))
 
+    # Component 1: text length shift (are texts becoming much longer/shorter?)
     incoming_lengths = np.array([len(str(t)) for t in incoming_texts], dtype=float)
     incoming_mean_len = float(incoming_lengths.mean())
     length_shift = abs(incoming_mean_len - baseline_mean_len) / max(baseline_mean_len, 1.0)
@@ -291,6 +313,7 @@ def detect_text_drift(
     for text in incoming_texts:
         all_tokens.extend(_tokenize(text))
 
+    # Component 2: out-of-vocabulary rate (how many new words are unseen?)
     if all_tokens and vocab:
         oov_tokens = sum(1 for tok in all_tokens if tok not in vocab)
         oov_rate = float(oov_tokens / len(all_tokens))
@@ -301,6 +324,7 @@ def detect_text_drift(
 
     oov_component = min(oov_rate * 2.0, 1.0)
 
+    # Component 3: label distribution shift (only when labels are provided)
     label_component = 0.0
     if incoming_labels:
         inc_dist_raw = pd.Series(incoming_labels, dtype="string").value_counts(normalize=True).to_dict()
@@ -362,29 +386,6 @@ def create_model(model_type: str, params: Dict[str, Any], random_state: int = 42
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
-def suggest_params(model_type: str, trial: optuna.Trial) -> Dict[str, Any]:
-    """Hyperparameter search space."""
-    if model_type == "LogisticRegression":
-        return {
-            "C": trial.suggest_float("C", 0.001, 100, log=True),
-            "solver": trial.suggest_categorical("solver", ["lbfgs", "liblinear"]),
-        }
-    if model_type == "RandomForest":
-        return {
-            "n_estimators": trial.suggest_int("n_estimators", 50, 300),
-            "max_depth": trial.suggest_int("max_depth", 5, 50),
-            "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
-        }
-    if model_type == "LinearSVC":
-        return {
-            "C": trial.suggest_float("C", 0.001, 100, log=True),
-            # dual=False in create_model only supports squared_hinge.
-            "loss": trial.suggest_categorical("loss", ["squared_hinge"]),
-        }
-    raise ValueError(f"Unsupported model type: {model_type}")
-
-
 def default_params(model_type: str) -> Dict[str, Any]:
     """Fallback params if optimization is off."""
     defaults = {
@@ -400,28 +401,11 @@ def default_params(model_type: str) -> Dict[str, Any]:
     return defaults[model_type]
 
 
-def optimize_params(
-    model_type: str,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    n_trials: int = 10,
-    random_state: int = 42,
-) -> Dict[str, Any]:
-    """Find best params by maximizing validation F1."""
-
-    def objective(trial: optuna.Trial) -> float:
-        params = suggest_params(model_type, trial)
-        model = create_model(model_type, params, random_state=random_state)
-        model.fit(X_train, y_train)
-        preds = model.predict(X_val)
-        return float(f1_score(y_val, preds, average="weighted", zero_division=0))
-
-    study = optuna.create_study(direction="maximize", sampler=TPESampler(seed=random_state))
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
-    return study.best_params
+def candidate_params(model_type: str, optimize: bool) -> List[Dict[str, Any]]:
+    """Return readable candidate configs for each model."""
+    if not optimize:
+        return [default_params(model_type)]
+    return PARAM_CANDIDATES[model_type]
 
 
 def train_models(
@@ -436,28 +420,35 @@ def train_models(
     """Train all candidate models and return their validation metrics."""
     results: Dict[str, Dict[str, Any]] = {}
     for model_type in ["LogisticRegression", "RandomForest", "LinearSVC"]:
-        params = (
-            optimize_params(model_type, X_train, y_train, X_val, y_val, n_trials, random_state)
-            if optimize
-            else default_params(model_type)
-        )
+        # For each algorithm, pick the best config based on validation F1.
+        best_payload: Dict[str, Any] | None = None
+        best_f1 = -1.0
 
-        model = create_model(model_type, params, random_state=random_state)
-        model.fit(X_train, y_train)
+        for params in candidate_params(model_type, optimize=optimize):
+            model = create_model(model_type, params, random_state=random_state)
+            model.fit(X_train, y_train)
 
-        val_preds = model.predict(X_val)
-        latency = measure_inference_latency(model, X_val)
-        metrics = evaluate_predictions(y_val, val_preds, latency)
+            val_preds = model.predict(X_val)
+            latency = measure_inference_latency(model, X_val)
+            metrics = evaluate_predictions(y_val, val_preds, latency)
+            curr_f1 = float(metrics["f1_score"])
 
-        results[model_type] = {
-            "model": model,
-            "metrics": metrics,
-            "config": {
-                "model_type": model_type,
-                "hyperparameters": params,
-                "feature_config": {"vectorizer": "TfidfVectorizer"},
-            },
-        }
+            if curr_f1 > best_f1:
+                best_f1 = curr_f1
+                best_payload = {
+                    "model": model,
+                    "metrics": metrics,
+                    "config": {
+                        "model_type": model_type,
+                        "hyperparameters": params,
+                        "feature_config": {"vectorizer": "TfidfVectorizer"},
+                    },
+                }
+
+        if best_payload is None:
+            raise RuntimeError(f"No model could be trained for {model_type}")
+
+        results[model_type] = best_payload
 
     return results
 
@@ -481,9 +472,11 @@ def train_and_promote(
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """End-to-end training pipeline that saves the best model and sets production."""
+    # Step A: prepare data
     df = load_dataset(dataset_path)
     packed = split_and_vectorize(df, test_size=0.15, val_size=0.15, random_state=random_state)
 
+    # Step B: train candidate algorithms
     trained_models = train_models(
         packed["X_train"],
         packed["y_train"],
@@ -494,6 +487,7 @@ def train_and_promote(
         random_state=random_state,
     )
 
+    # Step C: evaluate each trained algorithm on the held-out test split
     test_results: Dict[str, Dict[str, Any]] = {}
     for model_type, payload in trained_models.items():
         model = payload["model"]
@@ -509,6 +503,7 @@ def train_and_promote(
             "config": payload["config"],
         }
 
+    # Step D: select winner and store baseline stats for drift checks
     best_type, best_payload, best_score = pick_best_model(test_results)
 
     best_payload["config"]["drift_baseline"] = build_drift_baseline(
@@ -517,6 +512,7 @@ def train_and_promote(
         vectorizer=packed["vectorizer"],
     )
 
+    # Step E: save and promote selected model as production
     store = ModelStore(models_dir=models_dir, production_dir=production_dir)
     version = store.save(
         model=best_payload["model"],

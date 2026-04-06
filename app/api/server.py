@@ -65,6 +65,7 @@ current_vectorizer: Optional[Any] = None
 current_version: Optional[str] = None
 project_root: Optional[Path] = None
 dataset_path: Optional[Path] = None
+# Lock keeps predict/promote/reload safe when multiple requests happen together.
 model_lock = Lock()
 
 
@@ -93,6 +94,7 @@ async def startup() -> None:
     """Initialize model store and try loading production model."""
     global store, project_root, dataset_path
 
+    # Resolve all important folders once at startup.
     project_root = Path(__file__).parent.parent.parent
     dataset_path = project_root / "datasets" / "sample_data.csv"
     store = ModelStore(project_root / "models", project_root / "production")
@@ -120,6 +122,7 @@ async def predict(request: PredictionRequest) -> PredictionResponse:
         raise HTTPException(status_code=503, detail="No production model loaded")
 
     try:
+        # Use the same training vectorizer so feature mapping stays consistent.
         X = current_vectorizer.transform([request.text]).toarray()
 
         with model_lock:
@@ -200,6 +203,8 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
     texts = [r.text for r in request.records]
     labels = [r.label for r in request.records if r.label is not None]
 
+    # Drift baseline is stored with each model version.
+    # If missing (older models), rebuild it from dataset as fallback.
     config = store.load_config(current_version)
     baseline = config.get("drift_baseline")
     if baseline is None:
@@ -251,6 +256,7 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
         )
 
     try:
+        # Append new rows into dataset that future training will use.
         df_existing = pd.read_csv(dataset_path)
         next_id = int(df_existing["id"].max()) + 1 if not df_existing.empty else 1
 
@@ -264,6 +270,7 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
         merged = pd.concat([df_existing, df_new], ignore_index=True)
         merged.to_csv(dataset_path, index=False)
 
+        # Re-run training pipeline and promote the newly selected winner.
         result = train_and_promote(
             dataset_path=dataset_path,
             models_dir=project_root / "models",

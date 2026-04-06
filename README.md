@@ -61,6 +61,7 @@ This will:
 - load and clean dataset,
 - split train/val/test,
 - train LogisticRegression, RandomForest, LinearSVC,
+- try a small set of readable parameter candidates for each model,
 - select the best by weighted score,
 - save it to `models/model_vX/`,
 - mark it as production in `production/current_model.txt`.
