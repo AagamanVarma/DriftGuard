@@ -1,5 +1,6 @@
 """Simple FastAPI server for text classification."""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, Optional
@@ -53,10 +54,31 @@ class IngestResponse(BaseModel):
     message: str
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Initialize model store and try loading production model on app startup."""
+    global store, project_root, dataset_path
+
+    # Resolve all important folders once at startup.
+    project_root = Path(__file__).parent.parent.parent
+    dataset_path = project_root / "datasets" / "sample_data.csv"
+    store = ModelStore(project_root / "models", project_root / "production")
+
+    try:
+        version = store.get_production()
+        load_version(version)
+        logger.info(f"Loaded production model: {version}")
+    except FileNotFoundError:
+        logger.warning("No production model set yet. Train first with scripts/train.py")
+
+    yield
+
+
 app = FastAPI(
     title="Student ML Project API",
     description="Simple text classification API with model versioning",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 store: Optional[ModelStore] = None
@@ -89,22 +111,10 @@ def load_version(version: str) -> None:
         current_version = version
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    """Initialize model store and try loading production model."""
-    global store, project_root, dataset_path
-
-    # Resolve all important folders once at startup.
-    project_root = Path(__file__).parent.parent.parent
-    dataset_path = project_root / "datasets" / "sample_data.csv"
-    store = ModelStore(project_root / "models", project_root / "production")
-
-    try:
-        version = store.get_production()
-        load_version(version)
-        logger.info(f"Loaded production model: {version}")
-    except FileNotFoundError:
-        logger.warning("No production model set yet. Train first with scripts/train.py")
+@app.get("/")
+async def home() -> Dict[str, str]:
+    """Simple root endpoint to verify server is up."""
+    return {"message": "Server is running"}
 
 
 @app.get("/health", response_model=HealthResponse)

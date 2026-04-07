@@ -1,4 +1,4 @@
-# Drift aware ML system
+# DriftGuard: Drift aware ML system
 
 This is an ML project that:
 
@@ -31,6 +31,25 @@ project/
 ├── requirements.txt
 └── README.md
 ```
+
+## Quick Start (3 steps)
+
+1. **Install dependencies:**
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+2. **Train initial model:**
+  ```bash
+  python scripts/train.py
+  ```
+
+3. **Start API server (in new terminal):**
+  ```bash
+  docker-compose up --build
+  ```
+
+Server runs at `http://localhost:8000`
 
 ## Dataset Format
 
@@ -68,8 +87,43 @@ This will:
 
 ## Run API
 
+### Option 1: Docker (build locally)
+
+**Build and run with Docker Compose:**
+
 ```bash
-python -m uvicorn app.api.server:app --reload --port 8000
+docker-compose up --build
+```
+
+This will:
+- Build the Docker image
+- Start the FastAPI server on `http://localhost:8000`
+- Mount local `datasets/`, `models/`, and `production/` directories for persistence
+
+**Or build manually:**
+
+```bash
+docker build -t ml-api .
+docker run -p 8000:8000 -v $(pwd)/datasets:/app/datasets -v $(pwd)/models:/app/models -v $(pwd)/production:/app/production ml-api
+```
+
+### Option 2: Run from Docker Hub image
+
+Use the published image directly:
+
+```bash
+docker pull aagamanv/driftguard-api:latest
+docker run -p 8000:8000 \
+  -v $(pwd)/datasets:/app/datasets \
+  -v $(pwd)/models:/app/models \
+  -v $(pwd)/production:/app/production \
+  aagamanv/driftguard-api:latest
+```
+
+Health check:
+
+```bash
+curl http://localhost:8000/health
 ```
 
 ## API Endpoints

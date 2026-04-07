@@ -1,0 +1,15 @@
+services:
+  api:
+    build: .
+    image: driftguard-api:latest
+    container_name: ml-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount local directories so changes persist
+      - ./datasets:/app/datasets
+      - ./models:/app/models
+      - ./production:/app/production
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python -m uvicorn app.api.server:app --host 0.0.0.0 --port 8000
