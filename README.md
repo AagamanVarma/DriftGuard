@@ -126,6 +126,46 @@ Health check:
 curl http://localhost:8000/health
 ```
 
+## CI/CD (GitHub Actions)
+
+This project includes a workflow at `.github/workflows/ci-cd.yml`.
+
+### What runs on Pull Requests (feature branch -> `main`)
+
+When you open a PR to `main`, the **CI job** runs automatically:
+
+- install dependencies from `requirements.txt`
+- run tests from `tests/` (currently starter tests in `tests/test_core.py`)
+- run basic syntax/import check with `python -m compileall app scripts`
+
+> Docker image push does **not** run on PRs.
+
+### What runs on push/merge to `main`
+
+After PR merge (or direct push) to `main`:
+
+1. CI job runs again (tests + compile check)
+2. If CI passes, Docker job builds and pushes image to Docker Hub:
+   - `aagamanv/driftguard-api:latest`
+   - `aagamanv/driftguard-api:sha-<commit>`
+
+### Recommended branch flow
+
+1. Create a feature branch (example: `feature/add-endpoint`)
+2. Push branch and open PR to `main`
+3. Wait for CI to pass
+4. Merge PR
+5. Confirm new Docker tag in Docker Hub
+
+### Post-setup checklist
+
+- GitHub repository secrets set:
+  - `DOCKERHUB_USERNAME`
+  - `DOCKERHUB_TOKEN`
+- GitHub Actions tab shows successful runs
+- Docker Hub shows updated tags (`latest`, `sha-*`)
+- Optional: enable branch protection on `main` to require passing checks
+
 ## API Endpoints
 
 - `GET /health` → health status
