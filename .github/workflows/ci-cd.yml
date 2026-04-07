@@ -10,6 +10,8 @@ jobs:
   ci:
     name: Run basic checks
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout
