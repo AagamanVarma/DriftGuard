@@ -66,7 +66,7 @@ jobs:
           images: aagamanv/driftguard-api
           tags: |
             type=raw,value=latest
-            type=sha,prefix=sha-
+            type=sha,prefix=commit-
 
       - name: Build and push
         uses: docker/build-push-action@v6
