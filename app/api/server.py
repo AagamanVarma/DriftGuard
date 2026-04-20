@@ -141,8 +141,6 @@ async def list_models() -> Dict[str, Any]:
     if store is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
     models = store.list_models()
-    for model in models:
-        model.get("config", {}).get("drift_baseline", {}).pop("vocabulary", None)
     return {"total": len(models), "models": models}
 
 
@@ -152,7 +150,6 @@ async def current_model_info() -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="No production model set")
 
     config = store.load_config(current_version)
-    config.get("drift_baseline", {}).pop("vocabulary", None)
 
     return {
         "version": current_version,
@@ -218,7 +215,7 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
     # If missing (older models), rebuild it from dataset as fallback.
     config = store.load_config(current_version)
     baseline = config.get("drift_baseline")
-    if baseline is None:
+    if baseline is None or "length_samples" not in baseline:
         # Backward compatibility with older saved models
         try:
             ref_df = pd.read_csv(dataset_path)
@@ -231,8 +228,10 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
             logger.warning(f"Could not rebuild drift baseline from dataset: {e}")
             baseline = {
                 "length_mean": 1.0,
+                "length_std": 0.0,
+                "length_samples": [],
                 "label_distribution": {},
-                "vocabulary": [],
+                "created_at": "",
             }
 
     drift = detect_text_drift(

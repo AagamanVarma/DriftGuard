@@ -35,7 +35,12 @@ class IncomingRecord(BaseModel):
 class IngestRequest(BaseModel):
     records: list[IncomingRecord] = Field(..., description="Incoming batch records")
     auto_retrain: bool = Field(True, description="Retrain and promote if drift is detected")
-    drift_threshold: float = Field(0.35, ge=0.0, le=1.0)
+    drift_threshold: float = Field(
+        0.05,
+        ge=0.0,
+        le=1.0,
+        description="KS-test significance level (alpha) used to flag drift",
+    )
     min_window_size: int = Field(
         50,
         ge=1,

@@ -1,4 +1,4 @@
-# DriftGuard: Drift aware ML system
+# DriftGuard: Drift-aware ML system
 
 This is an ML project that:
 
@@ -21,14 +21,12 @@ project/
 │   │   ├── schemas.py       # API request/response models
 │   │   └── server.py        # FastAPI server
 │   ├── ml/
-│   │   ├── model_store.py   # Model persistence + production pointer
-│   │   ├── train_utils.py   # Train/select/save pipeline helpers
-│   │   ├── drift.py         # Drift baseline + drift scoring
+│   │   ├── model_store.py   # Save/load model versions
+│   │   ├── train_utils.py   # Train, compare, and pick best model
+│   │   ├── drift.py         # Drift baseline + statistical drift checks
 │   │   └── metrics.py       # Evaluation and weighted ranking
 │   ├── utils/
 │   │   └── logging.py       # Logger setup
-│   ├── services/
-│   │   └── __init__.py      # Service-layer package scaffold
 │   └── __init__.py
 ├── scripts/
 │   └── train.py             # Train + select best + save + promote
@@ -183,19 +181,18 @@ Main idea:
 
 1. New incoming records arrive through `POST /ingest`.
 2. A minimum window is enforced (`min_window_size`) before drift checks run.
-3. System compares incoming text statistics with the current model's saved baseline:
-   - text length shift,
-   - out-of-vocabulary token rate,
-   - label distribution shift (if labels are provided).
-4. If drift score exceeds threshold (default `0.35`), drift is flagged.
+3. The API runs two simple checks against the current model's baseline:
+  - **Text-length drift (KS test):** checks if incoming text lengths look very different from training data.
+  - **Label shift (chi-square test):** checks if the mix of labels has changed (only when labels are provided).
+4. If either check returns a p-value below the threshold (default `0.05`), drift is flagged.
 5. If `auto_retrain=true` and all records include labels:
-   - incoming data is appended to `datasets/sample_data.csv`,
+  - incoming data is appended to `datasets/sample_data.csv`,
   - challenger training pipeline runs,
   - challenger is saved as new `model_vX`,
   - challenger score is compared to champion score,
   - promotion happens only if challenger score >= champion score.
 
-This gives: **Incoming data → drift detection → challenger training → policy-based promotion**.
+In short: **Incoming data → drift check → challenger training → promote only if better**.
 
 ### Sample ingest request
 
@@ -205,7 +202,7 @@ curl -X POST "http://localhost:8000/ingest" \
   -d '{
     "auto_retrain": true,
     "min_window_size": 50,
-    "drift_threshold": 0.35,
+    "drift_threshold": 0.05,
     "records": [
       {"text": "Packaging was awful and service was slow", "label": "negative"},
       {"text": "Brilliant quality and very fast delivery", "label": "positive"}

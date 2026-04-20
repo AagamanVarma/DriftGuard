@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chisquare, ks_2samp
 from sklearn.feature_extraction.text import TfidfVectorizer
-
-
-def _tokenize(text: str) -> List[str]:
-    """Simple lowercase word tokenizer."""
-    return re.findall(r"[a-zA-Z']+", str(text).lower())
 
 
 def build_drift_baseline(
@@ -26,8 +21,6 @@ def build_drift_baseline(
         raise ValueError("Cannot build drift baseline from empty text list")
 
     lengths = np.array([len(str(t)) for t in texts], dtype=float)
-    token_counts = np.array([len(_tokenize(t)) for t in texts], dtype=float)
-    vocab = [str(v) for v in vectorizer.get_feature_names_out()]
 
     label_series = pd.Series(labels, dtype="string")
     label_dist = (label_series.value_counts(normalize=True)).to_dict()
@@ -36,9 +29,8 @@ def build_drift_baseline(
     return {
         "length_mean": float(lengths.mean()),
         "length_std": float(lengths.std(ddof=0)),
-        "avg_tokens": float(token_counts.mean()),
+        "length_samples": [float(length) for length in lengths.tolist()],
         "label_distribution": label_dist,
-        "vocabulary": vocab,
         "created_at": datetime.utcnow().isoformat(),
     }
 
@@ -47,71 +39,72 @@ def detect_text_drift(
     incoming_texts: List[str],
     baseline: Dict[str, Any],
     incoming_labels: List[str] | None = None,
-    threshold: float = 0.35,
+    threshold: float = 0.05,
 ) -> Dict[str, Any]:
-    """Score drift from incoming texts against saved baseline statistics."""
+    """Test drift from incoming data against saved baseline statistics.
+
+    Uses a two-sample Kolmogorov-Smirnov test for text lengths and a
+    chi-square goodness-of-fit test for label distribution shift when labels
+    are available. The threshold is interpreted as the significance level
+    (alpha) for both tests.
+    """
     if not incoming_texts:
         return {
             "is_drift": False,
             "drift_score": 0.0,
             "threshold": float(threshold),
-            "components": {"length_shift": 0.0, "oov_rate": 0.0, "label_shift": 0.0},
+            "components": {
+                "length_test": {"ks_statistic": 0.0, "p_value": 1.0},
+                "label_test": None,
+            },
         }
 
-    baseline_mean_len = float(baseline.get("length_mean", 1.0))
-    baseline_labels = baseline.get("label_distribution", {})
-    vocab = set(str(v) for v in baseline.get("vocabulary", []))
-
+    baseline_lengths = np.array(baseline.get("length_samples", []), dtype=float)
     incoming_lengths = np.array([len(str(t)) for t in incoming_texts], dtype=float)
-    incoming_mean_len = float(incoming_lengths.mean())
-    length_shift = abs(incoming_mean_len - baseline_mean_len) / max(baseline_mean_len, 1.0)
-    length_component = min(float(length_shift), 1.0)
 
-    all_tokens: List[str] = []
-    for text in incoming_texts:
-        all_tokens.extend(_tokenize(text))
-
-    if all_tokens and vocab:
-        oov_tokens = sum(1 for tok in all_tokens if tok not in vocab)
-        oov_rate = float(oov_tokens / len(all_tokens))
-    elif all_tokens:
-        oov_rate = 1.0
+    if baseline_lengths.size == 0:
+        ks_statistic = 0.0
+        p_value = 1.0
     else:
-        oov_rate = 0.0
+        ks_result = ks_2samp(baseline_lengths, incoming_lengths, alternative="two-sided", mode="auto")
+        ks_statistic = float(ks_result.statistic)
+        p_value = float(ks_result.pvalue)
 
-    oov_component = min(oov_rate * 2.0, 1.0)
+    label_test = None
+    label_p_value = 1.0
+    baseline_label_dist = baseline.get("label_distribution", {})
+    if incoming_labels and baseline_label_dist:
+        incoming_label_counts = pd.Series(incoming_labels, dtype="string").value_counts().to_dict()
+        label_keys = sorted(set(incoming_label_counts) | set(baseline_label_dist))
+        observed = np.array([float(incoming_label_counts.get(label, 0)) for label in label_keys], dtype=float)
+        expected_probs = np.array([float(baseline_label_dist.get(label, 0.0)) for label in label_keys], dtype=float)
 
-    label_component = 0.0
-    if incoming_labels:
-        inc_dist_raw = pd.Series(incoming_labels, dtype="string").value_counts(normalize=True).to_dict()
-        inc_dist = {str(k): float(v) for k, v in inc_dist_raw.items()}
-        keys = set(inc_dist) | set(baseline_labels)
-        label_component = 0.5 * sum(abs(inc_dist.get(k, 0.0) - float(baseline_labels.get(k, 0.0))) for k in keys)
+        if observed.sum() > 0 and expected_probs.sum() > 0:
+            expected = expected_probs / expected_probs.sum() * observed.sum()
+            epsilon = 1e-12
+            expected = np.where(expected <= 0.0, epsilon, expected)
+            expected *= observed.sum() / expected.sum()
+            chi2_result = chisquare(f_obs=observed, f_exp=expected)
+            label_p_value = float(chi2_result.pvalue)
+            label_test = {
+                "chi2_statistic": float(chi2_result.statistic),
+                "p_value": label_p_value,
+            }
 
-    components = {
-        "length_shift": float(length_component),
-        "oov_rate": float(oov_component),
-        "label_shift": float(min(label_component, 1.0)),
-    }
-
-    weights = {"length_shift": 0.5, "oov_rate": 0.3, "label_shift": 0.2}
-    if incoming_labels is None:
-        weights = {"length_shift": 0.625, "oov_rate": 0.375, "label_shift": 0.0}
-
-    drift_score = (
-        components["length_shift"] * weights["length_shift"]
-        + components["oov_rate"] * weights["oov_rate"]
-        + components["label_shift"] * weights["label_shift"]
-    )
+    is_length_drift = p_value < threshold
+    is_label_drift = label_test is not None and label_p_value < threshold
 
     return {
-        "is_drift": bool(drift_score >= threshold),
-        "drift_score": float(drift_score),
+        "is_drift": bool(is_length_drift or is_label_drift),
+        "drift_score": float(max(1.0 - p_value, 1.0 - label_p_value)),
         "threshold": float(threshold),
-        "components": components,
+        "components": {
+            "length_test": {"ks_statistic": ks_statistic, "p_value": p_value},
+            "label_test": label_test,
+        },
         "incoming_summary": {
             "num_samples": int(len(incoming_texts)),
-            "mean_text_length": float(incoming_mean_len),
-            "token_count": int(len(all_tokens)),
+            "mean_text_length": float(incoming_lengths.mean()),
+            "label_count": int(len(incoming_labels)) if incoming_labels else 0,
         },
     }
