@@ -183,12 +183,10 @@ Main idea:
 
 1. New incoming records arrive through `POST /ingest`.
 2. A minimum window is enforced (`min_window_size`) before drift checks run.
-3. System compares incoming text statistics with the current model's saved baseline:
-   - text length shift,
-   - out-of-vocabulary token rate,
-   - label distribution shift (if labels are provided).
-4. If drift score exceeds threshold (default `0.35`), drift is flagged.
-5. If `auto_retrain=true` and all records include labels:
+3. System compares the incoming text-length distribution with the current model's saved baseline using a two-sample Kolmogorov–Smirnov test.
+4. If labels are available, it also compares the incoming label distribution with the saved label baseline using a chi-square goodness-of-fit test.
+5. If either test has a p-value below the threshold (default `0.05`), drift is flagged.
+6. If `auto_retrain=true` and all records include labels:
    - incoming data is appended to `datasets/sample_data.csv`,
   - challenger training pipeline runs,
   - challenger is saved as new `model_vX`,
@@ -205,7 +203,7 @@ curl -X POST "http://localhost:8000/ingest" \
   -d '{
     "auto_retrain": true,
     "min_window_size": 50,
-    "drift_threshold": 0.35,
+    "drift_threshold": 0.05,
     "records": [
       {"text": "Packaging was awful and service was slow", "label": "negative"},
       {"text": "Brilliant quality and very fast delivery", "label": "positive"}
