@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from app.core import detect_text_drift, load_dataset, weighted_score
+from app.ml.drift import detect_text_drift
+from app.ml.metrics import weighted_score
+from app.ml.train_utils import load_dataset
 
 
 def test_detect_text_drift_empty_input_returns_no_drift():

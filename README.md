@@ -16,7 +16,6 @@ This is an ML project that:
 ```
 project/
 ├── app/
-│   ├── core.py              # Backward-compatible facade (re-exports split modules)
 │   ├── api/
 │   │   ├── __init__.py
 │   │   ├── schemas.py       # API request/response models

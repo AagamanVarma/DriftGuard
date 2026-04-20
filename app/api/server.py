@@ -8,14 +8,6 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException
 import pandas as pd
 
-from app.core import (
-    ModelStore,
-    build_drift_baseline,
-    detect_text_drift,
-    setup_logger,
-    train_and_promote,
-    weighted_score,
-)
 from app.api.schemas import (
     HealthResponse,
     IngestRequest,
@@ -23,6 +15,11 @@ from app.api.schemas import (
     PredictionRequest,
     PredictionResponse,
 )
+from app.ml.drift import build_drift_baseline, detect_text_drift
+from app.ml.metrics import weighted_score
+from app.ml.model_store import ModelStore
+from app.ml.train_utils import train_and_promote
+from app.utils.logging import setup_logger
 
 
 logger = setup_logger(__name__)
@@ -144,6 +141,8 @@ async def list_models() -> Dict[str, Any]:
     if store is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
     models = store.list_models()
+    for model in models:
+        model.get("config", {}).get("drift_baseline", {}).pop("vocabulary", None)
     return {"total": len(models), "models": models}
 
 
@@ -152,10 +151,13 @@ async def current_model_info() -> Dict[str, Any]:
     if store is None or current_version is None:
         raise HTTPException(status_code=404, detail="No production model set")
 
+    config = store.load_config(current_version)
+    config.get("drift_baseline", {}).pop("vocabulary", None)
+
     return {
         "version": current_version,
         "metrics": store.load_metrics(current_version),
-        "config": store.load_config(current_version),
+        "config": config,
     }
 
 

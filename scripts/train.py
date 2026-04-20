@@ -16,10 +16,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.core import (
-    setup_logger,
-    train_and_promote,
-)
+from app.ml.train_utils import train_and_promote
+from app.utils.logging import setup_logger
 
 
 logger = setup_logger(__name__)
