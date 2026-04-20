@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+from scipy.sparse import csr_matrix
 
 from app.ml.drift import detect_text_drift
-from app.ml.metrics import weighted_score
+from app.ml.metrics import measure_inference_latency, weighted_score
 from app.ml.train_utils import load_dataset
 
 
@@ -77,6 +79,18 @@ def test_weighted_score_with_default_weights():
 
     expected = 0.9 * 0.4 + 0.8 * 0.4 + 0.7 * 0.1 + 0.6 * 0.1
     assert score == pytest.approx(expected)
+
+
+def test_measure_inference_latency_supports_sparse_matrix():
+    class DummyModel:
+        def predict(self, X):
+            rows = int(X.shape[0])
+            return np.zeros(rows)
+
+    X_sparse = csr_matrix(np.eye(8))
+    latency_ms = measure_inference_latency(DummyModel(), X_sparse, num_runs=5)
+
+    assert latency_ms >= 0.0
 
 
 def test_load_dataset_raises_for_missing_columns(tmp_path: Path):

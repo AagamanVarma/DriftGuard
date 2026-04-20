@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import optuna
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -37,6 +38,35 @@ PARAM_CANDIDATES = {
         {"C": 2.0, "loss": "squared_hinge"},
     ],
 }
+
+
+def suggest_hyperparameters(trial: optuna.Trial, model_type: str) -> Dict[str, Any]:
+    """Suggest a hyperparameter set for one model type."""
+    if model_type == "LogisticRegression":
+        return {
+            "C": trial.suggest_float("C", 0.01, 20.0, log=True),
+            "solver": trial.suggest_categorical("solver", ["lbfgs", "liblinear"]),
+            "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
+        }
+
+    if model_type == "RandomForest":
+        return {
+            "n_estimators": trial.suggest_int("n_estimators", 100, 300, step=20),
+            "max_depth": trial.suggest_categorical("max_depth", [None, 10, 20, 30, 40, 50]),
+            "min_samples_split": trial.suggest_int("min_samples_split", 2, 10),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 5),
+            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
+        }
+
+    if model_type == "LinearSVC":
+        return {
+            "C": trial.suggest_float("C", 0.01, 20.0, log=True),
+            "loss": "squared_hinge",
+            "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
+            "tol": trial.suggest_float("tol", 1e-4, 1e-2, log=True),
+        }
+
+    raise ValueError(f"Unsupported model type: {model_type}")
 
 
 def load_dataset(csv_path: Path) -> pd.DataFrame:
@@ -86,9 +116,9 @@ def split_and_vectorize(
         max_df=0.95,
     )
 
-    X_train = vectorizer.fit_transform(train["text"]).toarray()
-    X_val = vectorizer.transform(val["text"]).toarray()
-    X_test = vectorizer.transform(test["text"]).toarray()
+    X_train = vectorizer.fit_transform(train["text"])
+    X_val = vectorizer.transform(val["text"])
+    X_test = vectorizer.transform(test["text"])
 
     return {
         "vectorizer": vectorizer,
@@ -145,32 +175,76 @@ def train_models(
     random_state: int = 42,
 ) -> Dict[str, Dict[str, Any]]:
     """Train all candidate models and return their validation metrics."""
-    _ = n_trials
     results: Dict[str, Dict[str, Any]] = {}
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
     for model_type in ["LogisticRegression", "RandomForest", "LinearSVC"]:
         best_payload: Dict[str, Any] | None = None
-        best_f1 = -1.0
+        best_score = -1.0
 
-        for params in candidate_params(model_type, optimize=optimize):
-            model = create_model(model_type, params, random_state=random_state)
-            model.fit(X_train, y_train)
+        if optimize:
+            trial_count = max(1, int(n_trials))
 
-            val_preds = model.predict(X_val)
-            latency = measure_inference_latency(model, X_val)
-            metrics = evaluate_predictions(y_val, val_preds, latency)
-            curr_f1 = float(metrics["f1_score"])
+            def objective(trial: optuna.Trial) -> float:
+                nonlocal best_payload, best_score
 
-            if curr_f1 > best_f1:
-                best_f1 = curr_f1
-                best_payload = {
-                    "model": model,
-                    "metrics": metrics,
-                    "config": {
-                        "model_type": model_type,
-                        "hyperparameters": params,
-                        "feature_config": {"vectorizer": "TfidfVectorizer"},
-                    },
-                }
+                params = suggest_hyperparameters(trial, model_type)
+                model = create_model(model_type, params, random_state=random_state)
+                model.fit(X_train, y_train)
+
+                val_preds = model.predict(X_val)
+                metrics = evaluate_predictions(y_val, val_preds, latency_ms=0.0)
+                score = float(weighted_score(metrics))
+
+                if score > best_score:
+                    best_score = score
+                    best_payload = {
+                        "model": model,
+                        "metrics": metrics,
+                        "config": {
+                            "model_type": model_type,
+                            "hyperparameters": params,
+                            "feature_config": {"vectorizer": "TfidfVectorizer"},
+                            "tuning": {
+                                "method": "optuna",
+                                "n_trials": trial_count,
+                                "best_validation_score": score,
+                                "trial_number": trial.number,
+                            },
+                        },
+                    }
+
+                return score
+
+            study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
+            study.optimize(objective, n_trials=trial_count)
+
+        else:
+            for params in candidate_params(model_type, optimize=False):
+                model = create_model(model_type, params, random_state=random_state)
+                model.fit(X_train, y_train)
+
+                val_preds = model.predict(X_val)
+                metrics = evaluate_predictions(y_val, val_preds, latency_ms=0.0)
+                score = float(weighted_score(metrics))
+
+                if score > best_score:
+                    best_score = score
+                    best_payload = {
+                        "model": model,
+                        "metrics": metrics,
+                        "config": {
+                            "model_type": model_type,
+                            "hyperparameters": params,
+                            "feature_config": {"vectorizer": "TfidfVectorizer"},
+                            "tuning": {
+                                "method": "manual",
+                                "n_trials": 1,
+                                "best_validation_score": score,
+                            },
+                        },
+                    }
 
         if best_payload is None:
             raise RuntimeError(f"No model could be trained for {model_type}")
