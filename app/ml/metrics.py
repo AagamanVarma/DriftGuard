@@ -19,8 +19,15 @@ DEFAULT_WEIGHTS = {
 
 
 def measure_inference_latency(model: Any, X: np.ndarray, num_runs: int = 100) -> float:
-    """Average latency in milliseconds."""
-    X_sample = X[:num_runs] if len(X) > num_runs else X
+    """Average latency in milliseconds.
+
+    Supports dense numpy arrays and scipy sparse matrices.
+    """
+    if hasattr(X, "shape") and X.shape is not None:
+        rows = int(X.shape[0])
+    else:
+        rows = int(len(X))
+    X_sample = X[:num_runs] if rows > num_runs else X
     start = time.perf_counter()
     for _ in range(num_runs):
         model.predict(X_sample)

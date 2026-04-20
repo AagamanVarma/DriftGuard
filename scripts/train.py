@@ -40,7 +40,7 @@ def main():
     
     try:
         logger.info("\n[Step 1-4] Training + selecting + saving + promoting best model...")
-        # optimize=True here means: try a small set of readable configs,
+        # optimize=True here means: run Optuna hyperparameter tuning,
         # then pick the best one using validation metrics.
         result = train_and_promote(
             dataset_path=dataset_path,
