@@ -16,10 +16,20 @@ This is an ML project that:
 ```
 project/
 ├── app/
-│   ├── core.py              # Main logic (data, training, metrics, model store)
+│   ├── core.py              # Backward-compatible facade (re-exports split modules)
 │   ├── api/
 │   │   ├── __init__.py
+│   │   ├── schemas.py       # API request/response models
 │   │   └── server.py        # FastAPI server
+│   ├── ml/
+│   │   ├── model_store.py   # Model persistence + production pointer
+│   │   ├── train_utils.py   # Train/select/save pipeline helpers
+│   │   ├── drift.py         # Drift baseline + drift scoring
+│   │   └── metrics.py       # Evaluation and weighted ranking
+│   ├── utils/
+│   │   └── logging.py       # Logger setup
+│   ├── services/
+│   │   └── __init__.py      # Service-layer package scaffold
 │   └── __init__.py
 ├── scripts/
 │   └── train.py             # Train + select best + save + promote
