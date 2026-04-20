@@ -48,7 +48,7 @@ project/
 
 2. **Train initial model:**
   ```bash
-  python scripts/train.py
+  python3 scripts/train.py
   ```
 
 3. **Start API server (in new terminal):**
@@ -79,7 +79,7 @@ id,text,label
 ## Train Model
 
 ```bash
-python scripts/train.py
+python3 scripts/train.py
 ```
 
 This will:
@@ -87,7 +87,8 @@ This will:
 - load and clean dataset,
 - split train/val/test,
 - train LogisticRegression, RandomForest, LinearSVC,
-- try a small set of readable parameter candidates for each model,
+- run Optuna-based hyperparameter tuning (`n_trials=5` by default in `scripts/train.py`),
+- skip latency measurement during tuning loops to keep training faster,
 - select the best by weighted score,
 - save it to `models/model_vX/`,
 - mark it as production in `production/current_model.txt`.
@@ -145,6 +146,8 @@ When you open a PR to `main`, the **CI job** runs automatically:
 - run tests from `tests/` (currently starter tests in `tests/test_core.py`)
 - run basic syntax/import check with `python -m compileall app scripts`
 
+> If the PR changes only `README.md`, the workflow is skipped (`paths-ignore`).
+
 > Docker image push does **not** run on PRs.
 
 ### What runs on push/merge to `main`
@@ -155,6 +158,8 @@ After PR merge (or direct push) to `main`:
 2. If CI passes, Docker job builds and pushes image to Docker Hub:
    - `aagamanv/driftguard-api:latest`
   - `aagamanv/driftguard-api:commit-<commit>`
+
+> If the push changes only `README.md`, the workflow is skipped (`paths-ignore`).
 
 ### Recommended branch flow
 
