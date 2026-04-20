@@ -3,8 +3,12 @@ name: CI/CD
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "README.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "README.md"
 
 jobs:
   ci:
