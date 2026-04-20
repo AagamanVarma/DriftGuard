@@ -7,7 +7,7 @@ This is an ML project that:
 3. saves it with versioning, and
 4. serves predictions through a FastAPI API,
 5. detects incoming data drift, and
-6. auto-retrains + upgrades when drift is high.
+6. trains a challenger and promotes it only when it beats the champion.
 
 
 
@@ -147,7 +147,7 @@ After PR merge (or direct push) to `main`:
 1. CI job runs again (tests + compile check)
 2. If CI passes, Docker job builds and pushes image to Docker Hub:
    - `aagamanv/driftguard-api:latest`
-   - `aagamanv/driftguard-api:sha-<commit>`
+  - `aagamanv/driftguard-api:commit-<commit>`
 
 ### Recommended branch flow
 
@@ -157,14 +157,6 @@ After PR merge (or direct push) to `main`:
 4. Merge PR
 5. Confirm new Docker tag in Docker Hub
 
-### Post-setup checklist
-
-- GitHub repository secrets set:
-  - `DOCKERHUB_USERNAME`
-  - `DOCKERHUB_TOKEN`
-- GitHub Actions tab shows successful runs
-- Docker Hub shows updated tags (`latest`, `sha-*`)
-- Optional: enable branch protection on `main` to require passing checks
 
 ## API Endpoints
 
@@ -174,25 +166,27 @@ After PR merge (or direct push) to `main`:
 - `GET /models/current` → show current production model info
 - `POST /models/{version}/promote` → set specific version as production
 - `POST /models/{version}/rollback` → same as promote (simple rollback)
-- `POST /ingest` → ingest incoming batch, detect drift, and auto-retrain/promote if drift is detected
+- `POST /ingest` → ingest incoming batch, detect drift, train challenger, and promote only if challenger outperforms champion
 
 ## Drift-aware Lifecycle
 
 Main idea:
 
 1. New incoming records arrive through `POST /ingest`.
-2. System compares incoming text statistics with the current model's saved baseline:
+2. A minimum window is enforced (`min_window_size`) before drift checks run.
+3. System compares incoming text statistics with the current model's saved baseline:
    - text length shift,
    - out-of-vocabulary token rate,
    - label distribution shift (if labels are provided).
-3. If drift score exceeds threshold (default `0.35`), drift is flagged.
-4. If `auto_retrain=true` and all records include labels:
+4. If drift score exceeds threshold (default `0.35`), drift is flagged.
+5. If `auto_retrain=true` and all records include labels:
    - incoming data is appended to `datasets/sample_data.csv`,
-   - training pipeline runs automatically,
-   - best model is saved as new `model_vX`,
-   - new version is promoted to production.
+  - challenger training pipeline runs,
+  - challenger is saved as new `model_vX`,
+  - challenger score is compared to champion score,
+  - promotion happens only if challenger score >= champion score.
 
-This gives: **Incoming data → drift detection → automatic upgrade**.
+This gives: **Incoming data → drift detection → challenger training → policy-based promotion**.
 
 ### Sample ingest request
 
@@ -201,6 +195,7 @@ curl -X POST "http://localhost:8000/ingest" \
   -H "Content-Type: application/json" \
   -d '{
     "auto_retrain": true,
+    "min_window_size": 50,
     "drift_threshold": 0.35,
     "records": [
       {"text": "Packaging was awful and service was slow", "label": "negative"},

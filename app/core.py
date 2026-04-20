@@ -470,8 +470,9 @@ def train_and_promote(
     optimize: bool = True,
     n_trials: int = 10,
     random_state: int = 42,
+    promote: bool = True,
 ) -> Dict[str, Any]:
-    """End-to-end training pipeline that saves the best model and sets production."""
+    """End-to-end training pipeline that saves best model and optionally sets production."""
     # Step A: prepare data
     df = load_dataset(dataset_path)
     packed = split_and_vectorize(df, test_size=0.15, val_size=0.15, random_state=random_state)
@@ -512,7 +513,7 @@ def train_and_promote(
         vectorizer=packed["vectorizer"],
     )
 
-    # Step E: save and promote selected model as production
+    # Step E: save selected model and optionally promote as production
     store = ModelStore(models_dir=models_dir, production_dir=production_dir)
     version = store.save(
         model=best_payload["model"],
@@ -520,10 +521,12 @@ def train_and_promote(
         metrics=best_payload["metrics"],
         config=best_payload["config"],
     )
-    store.set_production(version)
+    if promote:
+        store.set_production(version)
 
     return {
         "version": version,
+        "promoted": bool(promote),
         "best_model_type": best_type,
         "best_score": float(best_score),
         "metrics": best_payload["metrics"],

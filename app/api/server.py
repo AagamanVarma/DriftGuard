@@ -9,7 +9,14 @@ from fastapi import FastAPI, HTTPException
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from app.core import ModelStore, build_drift_baseline, detect_text_drift, setup_logger, train_and_promote
+from app.core import (
+    ModelStore,
+    build_drift_baseline,
+    detect_text_drift,
+    setup_logger,
+    train_and_promote,
+    weighted_score,
+)
 
 
 logger = setup_logger(__name__)
@@ -44,6 +51,11 @@ class IngestRequest(BaseModel):
     records: list[IncomingRecord] = Field(..., description="Incoming batch records")
     auto_retrain: bool = Field(True, description="Retrain and promote if drift is detected")
     drift_threshold: float = Field(0.35, ge=0.0, le=1.0)
+    min_window_size: int = Field(
+        50,
+        ge=1,
+        description="Minimum batch size required before running drift detection/retraining",
+    )
 
 
 class IngestResponse(BaseModel):
@@ -51,6 +63,10 @@ class IngestResponse(BaseModel):
     drift: Dict[str, Any]
     retrained: bool
     new_version: Optional[str] = None
+    champion_version: Optional[str] = None
+    challenger_version: Optional[str] = None
+    promoted: Optional[bool] = None
+    comparison: Optional[Dict[str, Any]] = None
     message: str
 
 
@@ -75,9 +91,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Student ML Project API",
-    description="Simple text classification API with model versioning",
-    version="1.0.0",
+    title="DriftGuard API",
+    description=(
+        "Text classification API with model versioning, drift detection, and "
+        "champion-vs-challenger promotion."
+    ),
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -210,6 +229,28 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
     if not request.records:
         raise HTTPException(status_code=400, detail="No records provided")
 
+    if len(request.records) < request.min_window_size:
+        return IngestResponse(
+            received=len(request.records),
+            drift={
+                "is_drift": False,
+                "drift_score": 0.0,
+                "threshold": float(request.drift_threshold),
+                "skipped": True,
+                "reason": "insufficient_window_size",
+                "window": {
+                    "received": len(request.records),
+                    "minimum_required": int(request.min_window_size),
+                },
+            },
+            retrained=False,
+            message=(
+                "Batch too small for reliable drift detection. "
+                f"Received {len(request.records)} records, need at least "
+                f"{request.min_window_size}."
+            ),
+        )
+
     texts = [r.text for r in request.records]
     labels = [r.label for r in request.records if r.label is not None]
 
@@ -280,7 +321,11 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
         merged = pd.concat([df_existing, df_new], ignore_index=True)
         merged.to_csv(dataset_path, index=False)
 
-        # Re-run training pipeline and promote the newly selected winner.
+        # Train a challenger on updated dataset but do not auto-promote.
+        champion_version = current_version
+        champion_metrics = store.load_metrics(champion_version)
+        champion_score = float(weighted_score(champion_metrics))
+
         result = train_and_promote(
             dataset_path=dataset_path,
             models_dir=project_root / "models",
@@ -288,19 +333,42 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
             optimize=True,
             n_trials=5,
             random_state=42,
+            promote=False,
         )
 
-        load_version(result["version"])
+        challenger_version = result["version"]
+        challenger_score = float(result["best_score"])
+        promoted = challenger_score >= champion_score
+
+        if promoted:
+            load_version(challenger_version)
+            message = (
+                "Drift detected. Incoming data appended, challenger retrained, and "
+                f"{challenger_version} promoted to production."
+            )
+            new_version = challenger_version
+        else:
+            message = (
+                "Drift detected and challenger retrained, but champion kept in production "
+                "because challenger score was lower."
+            )
+            new_version = None
 
         return IngestResponse(
             received=len(request.records),
             drift=drift,
             retrained=True,
-            new_version=result["version"],
-            message=(
-                "Drift detected. Incoming data appended, model retrained, and "
-                f"{result['version']} promoted to production."
-            ),
+            new_version=new_version,
+            champion_version=champion_version,
+            challenger_version=challenger_version,
+            promoted=promoted,
+            comparison={
+                "metric": "weighted_score",
+                "champion_score": champion_score,
+                "challenger_score": challenger_score,
+                "decision": "promote_challenger" if promoted else "keep_champion",
+            },
+            message=message,
         )
     except Exception as e:
         logger.error(f"Ingest/retrain failed: {e}", exc_info=True)
