@@ -21,6 +21,27 @@ from app.ml.model_store import ModelStore
 
 REQUIRED_COLUMNS = {"id", "text", "label"}
 
+# Hyperparameter search bounds for Optuna tuning
+LR_C_MIN, LR_C_MAX = 0.01, 20.0
+RF_N_EST_MIN, RF_N_EST_MAX = 100, 300
+RF_N_EST_STEP = 20
+RF_MAX_DEPTH_OPTIONS = [None, 10, 20, 30, 40, 50]
+RF_MIN_SAMPLES_SPLIT_MIN, RF_MIN_SAMPLES_SPLIT_MAX = 2, 10
+RF_MIN_SAMPLES_LEAF_MIN, RF_MIN_SAMPLES_LEAF_MAX = 1, 5
+RF_MAX_FEATURES_OPTIONS = ["sqrt", "log2", None]
+SVC_C_MIN, SVC_C_MAX = 0.01, 20.0
+SVC_TOL_MIN, SVC_TOL_MAX = 1e-4, 1e-2
+
+# Model iteration limits
+LR_MAX_ITER = 1000
+SVC_MAX_ITER = 2000
+
+# Vectorizer settings
+TFIDF_MAX_FEATURES = 1000
+TFIDF_MIN_DF = 2
+TFIDF_MAX_DF = 0.95
+TFIDF_STOP_WORDS = "english"
+
 PARAM_CANDIDATES = {
     "LogisticRegression": [
         {"C": 1.0, "solver": "lbfgs"},
@@ -44,26 +65,26 @@ def suggest_hyperparameters(trial: optuna.Trial, model_type: str) -> Dict[str, A
     """Suggest a hyperparameter set for one model type."""
     if model_type == "LogisticRegression":
         return {
-            "C": trial.suggest_float("C", 0.01, 20.0, log=True),
+            "C": trial.suggest_float("C", LR_C_MIN, LR_C_MAX, log=True),
             "solver": trial.suggest_categorical("solver", ["lbfgs", "liblinear"]),
             "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
         }
 
     if model_type == "RandomForest":
         return {
-            "n_estimators": trial.suggest_int("n_estimators", 100, 300, step=20),
-            "max_depth": trial.suggest_categorical("max_depth", [None, 10, 20, 30, 40, 50]),
-            "min_samples_split": trial.suggest_int("min_samples_split", 2, 10),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 5),
-            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
+            "n_estimators": trial.suggest_int("n_estimators", RF_N_EST_MIN, RF_N_EST_MAX, step=RF_N_EST_STEP),
+            "max_depth": trial.suggest_categorical("max_depth", RF_MAX_DEPTH_OPTIONS),
+            "min_samples_split": trial.suggest_int("min_samples_split", RF_MIN_SAMPLES_SPLIT_MIN, RF_MIN_SAMPLES_SPLIT_MAX),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", RF_MIN_SAMPLES_LEAF_MIN, RF_MIN_SAMPLES_LEAF_MAX),
+            "max_features": trial.suggest_categorical("max_features", RF_MAX_FEATURES_OPTIONS),
         }
 
     if model_type == "LinearSVC":
         return {
-            "C": trial.suggest_float("C", 0.01, 20.0, log=True),
+            "C": trial.suggest_float("C", SVC_C_MIN, SVC_C_MAX, log=True),
             "loss": "squared_hinge",
             "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
-            "tol": trial.suggest_float("tol", 1e-4, 1e-2, log=True),
+            "tol": trial.suggest_float("tol", SVC_TOL_MIN, SVC_TOL_MAX, log=True),
         }
 
     raise ValueError(f"Unsupported model type: {model_type}")
@@ -110,10 +131,10 @@ def split_and_vectorize(
 
     vectorizer = TfidfVectorizer(
         max_features=max_features,
-        stop_words="english",
+        stop_words=TFIDF_STOP_WORDS,
         lowercase=True,
-        min_df=2,
-        max_df=0.95,
+        min_df=TFIDF_MIN_DF,
+        max_df=TFIDF_MAX_DF,
     )
 
     X_train = vectorizer.fit_transform(train["text"])
@@ -135,11 +156,11 @@ def split_and_vectorize(
 def create_model(model_type: str, params: Dict[str, Any], random_state: int = 42) -> Any:
     """Factory for supported models."""
     if model_type == "LogisticRegression":
-        return LogisticRegression(random_state=random_state, max_iter=1000, **params)
+        return LogisticRegression(random_state=random_state, max_iter=LR_MAX_ITER, **params)
     if model_type == "RandomForest":
         return RandomForestClassifier(random_state=random_state, n_jobs=-1, **params)
     if model_type == "LinearSVC":
-        return LinearSVC(random_state=random_state, dual=False, max_iter=2000, **params)
+        return LinearSVC(random_state=random_state, dual=False, max_iter=SVC_MAX_ITER, **params)
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
