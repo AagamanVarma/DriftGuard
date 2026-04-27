@@ -65,6 +65,37 @@ dataset_path: Optional[Path] = None
 model_lock = Lock()
 
 
+def redact_config(config: dict) -> dict:
+    """Return a copy of model config with large drift baseline fields redacted.
+
+    Replaces long lists like `vocabulary` and `length_samples` with compact
+    summaries (counts and key stats) so API responses stay readable.
+    """
+    if not config or not isinstance(config, dict):
+        return config
+
+    cfg = dict(config)
+    baseline = cfg.get("drift_baseline")
+    if baseline and isinstance(baseline, dict):
+        summary: dict = {}
+        vocab = baseline.get("vocabulary")
+        if isinstance(vocab, list):
+            summary["vocab_size"] = len(vocab)
+
+        length_samples = baseline.get("length_samples")
+        if isinstance(length_samples, list):
+            summary["length_samples_count"] = len(length_samples)
+
+        # keep compact stats if present
+        for k in ("length_mean", "length_std", "label_distribution", "created_at", "avg_tokens"):
+            if k in baseline:
+                summary[k] = baseline[k]
+
+        cfg["drift_baseline"] = summary
+
+    return cfg
+
+
 def load_version(version: str) -> None:
     """Load one model version into memory and mark it production."""
     global current_model, current_vectorizer, current_version
@@ -141,6 +172,14 @@ async def list_models() -> Dict[str, Any]:
     if store is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
     models = store.list_models()
+    # redact heavy parts of config before returning
+    for m in models:
+        if isinstance(m, dict) and "config" in m:
+            try:
+                m["config"] = redact_config(m.get("config"))
+            except Exception:
+                # best-effort: if redaction fails, keep original but avoid crash
+                pass
     return {"total": len(models), "models": models}
 
 
@@ -148,8 +187,11 @@ async def list_models() -> Dict[str, Any]:
 async def current_model_info() -> Dict[str, Any]:
     if store is None or current_version is None:
         raise HTTPException(status_code=404, detail="No production model set")
-
     config = store.load_config(current_version)
+    try:
+        config = redact_config(config)
+    except Exception:
+        pass
 
     return {
         "version": current_version,
