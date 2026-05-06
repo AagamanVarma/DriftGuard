@@ -17,6 +17,7 @@ from app.api.schemas import (
 )
 from app.ml.drift import build_drift_baseline, detect_text_drift
 from app.ml.metrics import weighted_score
+from app.db.sqlite_store import SQLiteStore
 from app.ml.model_store import ModelStore
 from app.ml.train_utils import train_and_promote
 from app.utils.logging import setup_logger
@@ -28,12 +29,15 @@ logger = setup_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Initialize model store and try loading production model on app startup."""
-    global store, project_root, dataset_path
+    global store, project_root, dataset_path, db_store, sqlite_db_path
 
     # Resolve all important folders once at startup.
     project_root = Path(__file__).parent.parent.parent
     dataset_path = project_root / "datasets" / "sample_data.csv"
+    sqlite_db_path = project_root / "data" / "driftguard.db"
     store = ModelStore(project_root / "models", project_root / "production")
+    db_store = SQLiteStore(sqlite_db_path)
+    db_store.init_db()
 
     try:
         version = store.get_production()
@@ -61,6 +65,8 @@ current_vectorizer: Optional[Any] = None
 current_version: Optional[str] = None
 project_root: Optional[Path] = None
 dataset_path: Optional[Path] = None
+db_store: Optional[SQLiteStore] = None
+sqlite_db_path: Optional[Path] = None
 # Lock keeps predict/promote/reload safe when multiple requests happen together.
 model_lock = Lock()
 
@@ -115,6 +121,47 @@ def load_version(version: str) -> None:
         current_vectorizer = vectorizer
         current_version = version
 
+    if db_store is not None:
+        try:
+            db_store.upsert_model(
+                version=version,
+                metrics=store.load_metrics(version),
+                config=redact_config(store.load_config(version)),
+                promoted=True,
+                notes="loaded/promoted as production",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to sync model metadata to SQLite: {e}")
+
+
+def log_ingest_event(request: IngestRequest, drift: Dict[str, Any], response: IngestResponse) -> None:
+    """Persist one ingest request (batch + per-record rows) to SQLite."""
+    if db_store is None:
+        return
+
+    try:
+        batch_id = db_store.log_ingest_batch(
+            num_records=len(request.records),
+            min_window_size=request.min_window_size,
+            drift_threshold=float(request.drift_threshold),
+            auto_retrain=request.auto_retrain,
+            drift_score=drift.get("drift_score"),
+            is_drift=bool(drift.get("is_drift", False)),
+            retrained=response.retrained,
+            promoted=response.promoted,
+            champion_version=response.champion_version,
+            challenger_version=response.challenger_version,
+            new_version=response.new_version,
+            message=response.message,
+            drift_details=drift,
+        )
+        db_store.log_ingest_records(
+            batch_id,
+            [{"id": r.id, "text": r.text, "label": r.label} for r in request.records],
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log ingest event to SQLite: {e}")
+
 
 @app.get("/")
 async def home() -> Dict[str, str]:
@@ -129,6 +176,19 @@ async def health() -> HealthResponse:
         model_loaded=current_model is not None,
         current_model=current_version,
     )
+
+
+@app.get("/db/stats")
+async def db_stats() -> Dict[str, Any]:
+    """Return SQLite row counts for quick beginner-friendly observability."""
+    if db_store is None:
+        raise HTTPException(status_code=503, detail="Database store not initialized")
+
+    try:
+        return db_store.get_stats()
+    except Exception as e:
+        logger.error(f"Failed to get db stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get db stats: {e}")
 
 
 @app.post("/predict", response_model=PredictionResponse)
@@ -155,13 +215,27 @@ async def predict(request: PredictionRequest) -> PredictionResponse:
                     probs = {str(pred): 1.0}
                     pred_prob = 1.0
 
-        return PredictionResponse(
+        response = PredictionResponse(
             text=request.text,
             prediction=str(pred),
             probability=pred_prob,
             model_version=current_version,
             probabilities=probs,
         )
+
+        if db_store is not None:
+            try:
+                db_store.log_prediction(
+                    request_text=request.text,
+                    prediction=response.prediction,
+                    probability=response.probability,
+                    model_version=response.model_version,
+                    probabilities=response.probabilities,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log prediction to SQLite: {e}")
+
+        return response
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -229,7 +303,7 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
         raise HTTPException(status_code=400, detail="No records provided")
 
     if len(request.records) < request.min_window_size:
-        return IngestResponse(
+        response = IngestResponse(
             received=len(request.records),
             drift={
                 "is_drift": False,
@@ -249,6 +323,8 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
                 f"{request.min_window_size}."
             ),
         )
+        log_ingest_event(request, response.drift, response)
+        return response
 
     texts = [r.text for r in request.records]
     labels = [r.label for r in request.records if r.label is not None]
@@ -284,28 +360,34 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
     )
 
     if not drift["is_drift"]:
-        return IngestResponse(
+        response = IngestResponse(
             received=len(request.records),
             drift=drift,
             retrained=False,
             message="No meaningful drift detected. Production model unchanged.",
         )
+        log_ingest_event(request, drift, response)
+        return response
 
     if not request.auto_retrain:
-        return IngestResponse(
+        response = IngestResponse(
             received=len(request.records),
             drift=drift,
             retrained=False,
             message="Drift detected, but auto_retrain is disabled.",
         )
+        log_ingest_event(request, drift, response)
+        return response
 
     if len(labels) != len(texts):
-        return IngestResponse(
+        response = IngestResponse(
             received=len(request.records),
             drift=drift,
             retrained=False,
             message="Drift detected but retraining skipped: every record needs a label.",
         )
+        log_ingest_event(request, drift, response)
+        return response
 
     try:
         # Append new rows into dataset that future training will use.
@@ -355,7 +437,7 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
             )
             new_version = None
 
-        return IngestResponse(
+        response = IngestResponse(
             received=len(request.records),
             drift=drift,
             retrained=True,
@@ -371,6 +453,20 @@ async def ingest_data(request: IngestRequest) -> IngestResponse:
             },
             message=message,
         )
+        if db_store is not None:
+            try:
+                db_store.upsert_model(
+                    version=challenger_version,
+                    metrics=store.load_metrics(challenger_version),
+                    config=redact_config(store.load_config(challenger_version)),
+                    promoted=promoted,
+                    notes="challenger training result",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to sync challenger model metadata to SQLite: {e}")
+
+        log_ingest_event(request, drift, response)
+        return response
     except Exception as e:
         logger.error(f"Ingest/retrain failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ingest/retrain failed: {e}")

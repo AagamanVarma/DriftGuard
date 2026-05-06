@@ -32,6 +32,8 @@ project/
 │   └── train.py             # Train + select best + save + promote
 ├── datasets/
 │   └── sample_data.csv      # Input CSV (id, text, label)
+├── data/
+│   └── driftguard.db        # SQLite app/event metadata store (auto-created)
 ├── models/                  # Saved model versions (model_v1, model_v2...)
 ├── production/
 │   └── current_model.txt    # Current production version pointer
@@ -57,6 +59,19 @@ project/
   ```
 
 Server runs at `http://localhost:8000`
+
+## SQLite storage (auto-created)
+
+The API now creates `data/driftguard.db` automatically on startup.
+
+Stored in SQLite:
+- prediction logs (`/predict` requests + outputs)
+- ingest batch summaries (`/ingest` drift/retrain decisions)
+- ingest records (each incoming text/label linked to a batch)
+- model metadata snapshots (version, metrics/config summary, promotion state)
+
+Not stored in SQLite:
+- model binaries (`model.pkl`, `vectorizer.pkl`) still live under `models/model_vX/`
 
 ## Dataset Format
 
@@ -173,6 +188,7 @@ After PR merge (or direct push) to `main`:
 ## API Endpoints
 
 - `GET /health` → health status
+- `GET /db/stats` → SQLite table row counts + DB file info
 - `POST /predict` → predict label from text
 - `GET /models` → list all saved models
 - `GET /models/current` → show current production model info
